@@ -1,0 +1,15 @@
+tcp/3306/mysql.allow 
+#udp/3306/mysql.allow 
+tcp/21/ftp.allow
+tcp/20/ftp.allow
+tcp/1024:65535/local.allow
+tcp/22/ssh.allow
+tcp/445/samba.allow
+udp/445/samba.allow
+tcp/137:139/samba.allow
+udp/137:139/samba.allow
+udp/161:162/snmp.allow
+tcp/514/syslog.allow
+udp/514/syslog.allow
+tcp/80/http.allow
+tcp/8080/http.allow

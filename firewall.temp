@@ -1,0 +1,159 @@
+#!/bin/sh
+
+SYSCTL="/sbin/sysctl -w" 
+IPT="/sbin/iptables"
+
+# Interfaces
+INET_IFACE="eth0"
+LOCAL_IFACE="eth0"
+LO_IFACE="lo"
+LO_IP="127.0.0.1"
+
+if [ "$SYSCTL" = "" ]
+then
+    echo "1" > /proc/sys/net/ipv4/tcp_syncookies
+else
+    $SYSCTL net.ipv4.tcp_syncookies="1"
+fi
+
+if [ "$SYSCTL" = "" ]
+then
+    echo "1" > /proc/sys/net/ipv4/conf/all/rp_filter
+else
+    $SYSCTL net.ipv4.conf.all.rp_filter="1"
+fi
+
+if [ "$SYSCTL" = "" ]
+then
+    echo "1" > /proc/sys/net/ipv4/icmp_echo_ignore_broadcasts
+else
+    $SYSCTL net.ipv4.icmp_echo_ignore_broadcasts="1"
+fi
+
+if [ "$SYSCTL" = "" ]
+then
+    echo "0" > /proc/sys/net/ipv4/conf/all/accept_source_route
+else
+    $SYSCTL net.ipv4.conf.all.accept_source_route="0"
+fi
+
+if [ "$SYSCTL" = "" ]
+then
+    echo "1" > /proc/sys/net/ipv4/conf/all/secure_redirects
+else
+    $SYSCTL net.ipv4.conf.all.secure_redirects="1"
+fi
+
+if [ "$SYSCTL" = "" ]
+then
+    echo "0" > /proc/sys/net/ipv4/conf/all/log_martians
+else
+    $SYSCTL net.ipv4.conf.all.log_martians="0"
+fi
+
+echo "1800" > /proc/sys/net/ipv4/tcp_keepalive_time
+
+
+echo "Flushing Tables ..."
+
+# Reset Default Policies
+$IPT -P INPUT ACCEPT
+$IPT -P FORWARD ACCEPT
+$IPT -P OUTPUT ACCEPT
+$IPT -t nat -P PREROUTING ACCEPT
+$IPT -t nat -P POSTROUTING ACCEPT
+$IPT -t nat -P OUTPUT ACCEPT
+$IPT -t mangle -P PREROUTING ACCEPT
+$IPT -t mangle -P OUTPUT ACCEPT
+
+# Flush all rules
+$IPT -F
+$IPT -t nat -F
+$IPT -t mangle -F
+
+# Erase all non-default chains
+$IPT -X
+$IPT -t nat -X
+$IPT -t mangle -X
+
+if [ "$1" = "stop" ]
+then
+	echo "Firewall completely flushed!  Now running with no firewall."
+	exit 0
+fi
+
+$IPT -P INPUT DROP
+$IPT -P OUTPUT DROP
+$IPT -P FORWARD DROP
+
+echo "Create and populate custom rule chains ..."
+$IPT -N bad_packets
+$IPT -N bad_tcp_packets
+$IPT -N icmp_packets
+$IPT -N udp_inbound
+$IPT -N udp_outbound
+$IPT -N tcp_inbound
+$IPT -N tcp_outbound
+$IPT -N admin_inbound
+
+# Drop INVALID packets immediately
+$IPT -A bad_packets -p ALL -m state --state INVALID -j DROP
+$IPT -A bad_packets -p tcp -j bad_tcp_packets
+$IPT -A bad_packets -p ALL -j RETURN
+
+# bad_tcp_packets chain
+$IPT -A bad_tcp_packets -p tcp ! --syn -m state --state NEW -j DROP
+$IPT -A bad_tcp_packets -p tcp --tcp-flags ALL NONE -j DROP
+$IPT -A bad_tcp_packets -p tcp --tcp-flags ALL ALL -j DROP
+$IPT -A bad_tcp_packets -p tcp --tcp-flags ALL FIN,URG,PSH -j DROP
+$IPT -A bad_tcp_packets -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -j DROP
+$IPT -A bad_tcp_packets -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
+$IPT -A bad_tcp_packets -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
+$IPT -A bad_tcp_packets -p tcp -j RETURN
+
+#icmp_packets chain
+$IPT -A icmp_packets --fragment -p ICMP -j DROP
+$IPT -A icmp_packets -p ICMP -s 0/0 --icmp-type 8 -j ACCEPT
+$IPT -A icmp_packets -p ICMP -s 0/0 --icmp-type 0 -j ACCEPT
+$IPT -A icmp_packets -p ICMP -s 0/0 --icmp-type 11 -j ACCEPT
+$IPT -A icmp_packets -p ICMP -j RETURN
+
+#custom_udp_inbound
+$IPT -A udp_inbound -p UDP -j RETURN
+
+#udp_outbound chain
+$IPT -A udp_outbound -p UDP -s 0/0 -j ACCEPT
+
+
+$IPT -A tcp_inbound -p TCP --dport 80 -i eth0 -m state --state NEW -m recent --set
+$IPT -A tcp_inbound -p TCP --dport 80 -i eth0 -m state --state NEW -m recent --update --seconds 600 --hitcount 5 -j DROP
+#custom_tcp_inbound
+$IPT -A tcp_inbound -p TCP -j RETURN
+
+#custom_admin_inbound
+$IPT -A admin_inbound -p ALL -j RETURN
+
+#tcp_outbound chain
+$IPT -A tcp_outbound -p TCP -s 0/0 -j ACCEPT
+
+echo "Process INPUT chain ..."
+# Allow all on local interface
+$IPT -A INPUT -p ALL -i $LO_IFACE -j ACCEPT
+$IPT -A INPUT -p ALL -i $LOCAL_IFACE -j ACCEPT
+# Set all chains
+$IPT -A INPUT -p ALL -j bad_packets
+$IPT -A INPUT -p ALL -d 224.0.0.1 -j DROP
+$IPT -A INPUT -p ALL -i $INET_IFACE -m state --state ESTABLISHED,RELATED  -j ACCEPT
+$IPT -A INPUT -p ALL -i $INET_IFACE -j admin_inbound
+$IPT -A INPUT -p TCP -i $INET_IFACE -j tcp_inbound
+$IPT -A INPUT -p UDP -i $INET_IFACE -j udp_inbound
+$IPT -A INPUT -p ICMP -i $INET_IFACE -j icmp_packets
+$IPT -A INPUT -m pkttype --pkt-type broadcast -j DROP
+
+echo "Process OUTPUT chain ..."
+# However, invalid icmp packets need to be dropped  to prevent a possible exploit.
+$IPT -A OUTPUT -m state -p icmp --state INVALID -j DROP
+$IPT -A OUTPUT -p ALL -s $LO_IP -j ACCEPT
+$IPT -A OUTPUT -p ALL -o $LO_IFACE -j ACCEPT
+$IPT -A OUTPUT -p ALL -o $LOCAL_IFACE -j ACCEPT
+$IPT -A OUTPUT -p ALL -o $INET_IFACE -j ACCEPT

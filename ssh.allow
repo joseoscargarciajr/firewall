@@ -1,0 +1,15 @@
+#Local servers
+#192.168.255.11	appserver
+#192.168.255.12	processing
+#192.168.255.13	encoding
+#192.168.255.14	mbtcencoding
+#192.168.255.15	webservice
+#192.168.255.20	mysql-prod
+#192.168.255.30	mysql-backup
+#192.168.255.31	win2k3
+192.168.255.0/24	intranet
+
+# Remote
+121.54.92.0/24	oscar_house
+96.63.94.0/24	oscar_office
+192.168.255.79	backup
